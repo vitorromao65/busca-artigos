@@ -15,6 +15,7 @@ let currentQuery = '';
 let currentOffset = 0;
 let totalResults = 0;
 let isLoading = false;
+let currentQueryEmbedding = null;  // Cache do embedding da query para todas as páginas
 
 // Elementos DOM
 const searchInput = document.getElementById('searchInput');
@@ -131,11 +132,14 @@ async function fetchPapers() {
         totalResults = data.total || 0;
         let papers = data.data || [];
 
-        // Reordenar por similaridade semântica (apenas na primeira página)
-        if (currentOffset === 0 && papers.length > 0) {
-            // Gerar embedding da query via API SPECTER
-            const queryEmbedding = await getQueryEmbedding(currentQuery);
-            papers = reorderBySemanticSimilarity(papers, queryEmbedding);
+        // Busca semântica: gerar embedding na primeira página, reutilizar nas seguintes
+        if (papers.length > 0) {
+            if (currentOffset === 0) {
+                // Primeira página: gerar embedding da query
+                currentQueryEmbedding = await getQueryEmbedding(currentQuery);
+            }
+            // Aplicar scores e reordenar (apenas primeira página reordena)
+            papers = reorderBySemanticSimilarity(papers, currentQueryEmbedding, currentOffset === 0);
         }
 
         if (papers.length === 0 && currentOffset === 0) {
@@ -233,14 +237,15 @@ async function getQueryEmbedding(queryText) {
 }
 
 /**
- * Reordena papers por similaridade semântica com a query
- * Usa o embedding REAL da query gerado via API SPECTER
+ * Aplica scores de similaridade semântica aos papers
+ * Reordena apenas na primeira página para não misturar com resultados já exibidos
  * 
  * @param {Array} papers - Array de papers com embeddings
  * @param {number[]} queryEmbedding - Embedding da query
- * @returns {Array} Papers reordenados por similaridade semântica
+ * @param {boolean} shouldReorder - Se deve reordenar (true na primeira página)
+ * @returns {Array} Papers com scores (e reordenados se shouldReorder)
  */
-function reorderBySemanticSimilarity(papers, queryEmbedding) {
+function reorderBySemanticSimilarity(papers, queryEmbedding, shouldReorder = true) {
     // Separar papers com e sem embedding
     const withEmbedding = papers.filter(p => p.embedding?.vector);
     const withoutEmbedding = papers.filter(p => !p.embedding?.vector);
@@ -251,7 +256,7 @@ function reorderBySemanticSimilarity(papers, queryEmbedding) {
         return papers;
     }
 
-    console.log(`[Semantic Search] Comparando ${withEmbedding.length} papers com embedding da query`);
+    console.log(`[Semantic Search] Aplicando scores a ${withEmbedding.length} papers (reordenar: ${shouldReorder})`);
 
     // Calcular score de similaridade para cada paper
     const scored = withEmbedding.map(paper => ({
@@ -259,21 +264,26 @@ function reorderBySemanticSimilarity(papers, queryEmbedding) {
         semanticScore: cosineSimilarity(queryEmbedding, paper.embedding.vector)
     }));
 
-    // Ordenar por score decrescente
-    scored.sort((a, b) => b.semanticScore - a.semanticScore);
+    // Reordenar apenas na primeira página
+    if (shouldReorder) {
+        scored.sort((a, b) => b.semanticScore - a.semanticScore);
 
-    // Log para debug
-    console.log('[Semantic Search] Top 3 scores:',
-        scored.slice(0, 3).map(p => ({
-            title: p.title.substring(0, 50) + '...',
-            score: p.semanticScore.toFixed(3)
-        }))
-    );
+        // Log para debug
+        console.log('[Semantic Search] Top 3 scores:',
+            scored.slice(0, 3).map(p => ({
+                title: p.title.substring(0, 50) + '...',
+                score: p.semanticScore.toFixed(3)
+            }))
+        );
 
-    // Papers sem embedding vão para o final, ordenados por citações
-    withoutEmbedding.sort((a, b) => (b.citationCount || 0) - (a.citationCount || 0));
+        // Papers sem embedding vão para o final, ordenados por citações
+        withoutEmbedding.sort((a, b) => (b.citationCount || 0) - (a.citationCount || 0));
+    }
 
-    return [...scored, ...withoutEmbedding];
+    // Marcar papers sem embedding para não mostrar badge
+    withoutEmbedding.forEach(p => p.semanticScore = null);
+
+    return shouldReorder ? [...scored, ...withoutEmbedding] : [...scored, ...withoutEmbedding];
 }
 
 function renderPapers(papers) {
