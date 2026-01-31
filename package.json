@@ -1,0 +1,12 @@
+{
+  "name": "busca-artigos",
+  "version": "1.0.0",
+  "description": "Buscador de artigos científicos usando Semantic Scholar API",
+  "scripts": {
+    "start": "npx serve -s . -l $PORT",
+    "build": "node build.js"
+  },
+  "keywords": ["semantic-scholar", "academic", "papers", "search"],
+  "author": "",
+  "license": "MIT"
+}
