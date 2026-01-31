@@ -426,6 +426,12 @@ body {
     color: #065f46;
 }
 
+.paper-tag.semantic-score {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-weight: 600;
+}
+
 .paper-actions {
     display: flex;
     gap: 12px;

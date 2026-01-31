@@ -97,7 +97,8 @@ async function fetchPapers() {
             'url',
             'tldr',
             'fieldsOfStudy',
-            's2FieldsOfStudy'
+            's2FieldsOfStudy',
+            'embedding.specter_v1'  // Usa v1 para compatibilidade com API de embedding
         ].join(',');
 
         const params = new URLSearchParams({
@@ -128,7 +129,14 @@ async function fetchPapers() {
         const data = await response.json();
 
         totalResults = data.total || 0;
-        const papers = data.data || [];
+        let papers = data.data || [];
+
+        // Reordenar por similaridade semântica (apenas na primeira página)
+        if (currentOffset === 0 && papers.length > 0) {
+            // Gerar embedding da query via API SPECTER
+            const queryEmbedding = await getQueryEmbedding(currentQuery);
+            papers = reorderBySemanticSimilarity(papers, queryEmbedding);
+        }
 
         if (papers.length === 0 && currentOffset === 0) {
             showError('Nenhum artigo encontrado para sua busca. Tente outros termos.');
@@ -152,6 +160,120 @@ async function fetchPapers() {
         isLoading = false;
         showLoading(false);
     }
+}
+
+// ==========================================
+// BUSCA SEMÂNTICA - Cosine Similarity
+// ==========================================
+
+/**
+ * Calcula a similaridade de cosseno entre dois vetores
+ * @param {number[]} vectorA - Primeiro vetor (768 dimensões)
+ * @param {number[]} vectorB - Segundo vetor (768 dimensões)
+ * @returns {number} Similaridade entre -1 e 1 (1 = idênticos)
+ */
+function cosineSimilarity(vectorA, vectorB) {
+    if (!vectorA || !vectorB || vectorA.length !== vectorB.length) {
+        return 0;
+    }
+
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+
+    for (let i = 0; i < vectorA.length; i++) {
+        dotProduct += vectorA[i] * vectorB[i];
+        normA += vectorA[i] * vectorA[i];
+        normB += vectorB[i] * vectorB[i];
+    }
+
+    normA = Math.sqrt(normA);
+    normB = Math.sqrt(normB);
+
+    if (normA === 0 || normB === 0) return 0;
+
+    return dotProduct / (normA * normB);
+}
+
+/**
+ * Gera embedding da query usando o proxy local (que chama API SPECTER)
+ * @param {string} queryText - Texto da query de busca
+ * @returns {Promise<number[]|null>} Vetor de 768 dimensões ou null se falhar
+ */
+async function getQueryEmbedding(queryText) {
+    try {
+        console.log('[Semantic Search] Gerando embedding da query...');
+
+        // Usa proxy local para evitar CORS
+        const response = await fetch('/api/embedding', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ query: queryText })
+        });
+
+        if (!response.ok) {
+            console.error('[Semantic Search] Erro no proxy:', response.status);
+            return null;
+        }
+
+        const data = await response.json();
+
+        if (data.embedding && data.embedding.length > 0) {
+            console.log(`[Semantic Search] Embedding gerado com ${data.embedding.length} dimensões`);
+            return data.embedding;
+        }
+
+        return null;
+    } catch (error) {
+        console.error('[Semantic Search] Erro ao gerar embedding:', error);
+        return null;
+    }
+}
+
+/**
+ * Reordena papers por similaridade semântica com a query
+ * Usa o embedding REAL da query gerado via API SPECTER
+ * 
+ * @param {Array} papers - Array de papers com embeddings
+ * @param {number[]} queryEmbedding - Embedding da query
+ * @returns {Array} Papers reordenados por similaridade semântica
+ */
+function reorderBySemanticSimilarity(papers, queryEmbedding) {
+    // Separar papers com e sem embedding
+    const withEmbedding = papers.filter(p => p.embedding?.vector);
+    const withoutEmbedding = papers.filter(p => !p.embedding?.vector);
+
+    // Se não temos embedding da query ou poucos papers têm embedding
+    if (!queryEmbedding || withEmbedding.length === 0) {
+        console.log('[Semantic Search] Sem embedding disponível, mantendo ordem original');
+        return papers;
+    }
+
+    console.log(`[Semantic Search] Comparando ${withEmbedding.length} papers com embedding da query`);
+
+    // Calcular score de similaridade para cada paper
+    const scored = withEmbedding.map(paper => ({
+        ...paper,
+        semanticScore: cosineSimilarity(queryEmbedding, paper.embedding.vector)
+    }));
+
+    // Ordenar por score decrescente
+    scored.sort((a, b) => b.semanticScore - a.semanticScore);
+
+    // Log para debug
+    console.log('[Semantic Search] Top 3 scores:',
+        scored.slice(0, 3).map(p => ({
+            title: p.title.substring(0, 50) + '...',
+            score: p.semanticScore.toFixed(3)
+        }))
+    );
+
+    // Papers sem embedding vão para o final, ordenados por citações
+    withoutEmbedding.sort((a, b) => (b.citationCount || 0) - (a.citationCount || 0));
+
+    return [...scored, ...withoutEmbedding];
 }
 
 function renderPapers(papers) {
@@ -219,6 +341,7 @@ function createPaperCard(paper) {
         ` : ''}
         
         <div class="paper-tags">
+            ${paper.semanticScore !== undefined ? `<span class="paper-tag semantic-score" title="Relevância semântica: ${Math.round(paper.semanticScore * 100)}%">🎯 ${Math.round(paper.semanticScore * 100)}%</span>` : ''}
             ${paper.isOpenAccess ? '<span class="paper-tag open-access">🔓 Open Access</span>' : ''}
             ${fields.map(f => `<span class="paper-tag">${escapeHtml(f)}</span>`).join('')}
         </div>
